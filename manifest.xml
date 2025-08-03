@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<CodeBlocks_plugin_manifest_file>
+    <SdkVersion major="2" minor="23"  release="0" />
+    <Plugin name="CBBkgdColor">
+        <Value title="CBBkgdColor" />
+        <Value version="1.0.3 25/07/29" />
+        <Value description="Set CB backgrounds" />
+        <Value author="Pecan" />
+        <Value authorEmail="" />
+        <Value authorWebsite="CodeBlocks team" />
+        <Value thanksTo="" />
+        <Value license="GPL" />
+    </Plugin>
+</CodeBlocks_plugin_manifest_file>
