@@ -1,7 +1,13 @@
 #include <sdk.h> // Code::Blocks SDK
 #include <configurationpanel.h>
-#include "cbcolourmanager.h"
+//#include "cbcolourmanager.h"
 #include "CBBkgdColor.h"
+//#include "cbeditor.h" //not used
+#include "cbstyledtextctrl.h"
+#include <wx/colour.h>
+#include <wx/stc/stc.h>  // for wxSTC_STYLE_DEFAULT and related constants
+#include "loggers.h"
+
 
 // Register the plugin with Code::Blocks.
 // We are using an anonymous namespace so we don't litter the global one.
@@ -10,13 +16,16 @@ namespace
 // ----------------------------------------------------------------------------
 {
     PluginRegistrant<CBBkgdColor> reg(_T("CBBkgdColor"));
+    // File to hold data from .conf file
+    wxTextFile confData;
+
 }
 
 
-// events handling
-BEGIN_EVENT_TABLE(CBBkgdColor, cbPlugin)
+    // events handling
+    BEGIN_EVENT_TABLE(CBBkgdColor, cbPlugin)
     // add any events you want to handle here
-END_EVENT_TABLE()
+    END_EVENT_TABLE()
 
 // constructor
 // ----------------------------------------------------------------------------
@@ -50,7 +59,9 @@ void CBBkgdColor::OnAttach()
     // (see: does not need) this plugin...
 
     Manager* pMgr = Manager::Get();
+    // Register for events
     pMgr->RegisterEventSink(cbEVT_APP_STARTUP_DONE, new cbEventFunctor<CBBkgdColor, CodeBlocksEvent>(this, &CBBkgdColor::OnAppStartupDone));
+    pMgr->RegisterEventSink(cbEVT_SETTINGS_CHANGED, new cbEventFunctor<CBBkgdColor, CodeBlocksEvent>(this, &CBBkgdColor::OnSettingsChanged));
     // Set current plugin version
 	PluginInfo* pInfo = (PluginInfo*)(Manager::Get()->GetPluginManager()->GetPluginInfo(this));
 	pInfo->version = wxT(VERSION);
@@ -95,24 +106,63 @@ void CBBkgdColor::BuildModuleMenu(const ModuleType type, wxMenu* menu, const Fil
 void CBBkgdColor::OnAppStartupDone(CodeBlocksEvent& event)
 // ----------------------------------------------------------------------------
 {
+    // Get the users desired color from the Syntax Highlighting settings
+    // Set all background color to match that of the Editor backgroun color
 
     if (not m_startupDone)
     {
-        Connect(wxEVT_IDLE, wxIdleEventHandler(CBBkgdColor::OnIdle) );
         m_startupDone += 1;
+        m_UsrBkgdColor = GetDefaultEditorBackground();
+        if (m_UsrBkgdColor == wxColour(0,0,0))
+            return; //Dont set uninitialized color
+
+        Connect(wxEVT_IDLE, wxIdleEventHandler(CBBkgdColor::OnIdle) );
     }
 
-    // Get the users desired color from the "Start_here_background" setting
-    // Set all background color to match that of the Start Here page
-    ColourManager* cm = Manager::Get()->GetColourManager();
-    wxColour color = cm->GetColour("start_here_background");
-    m_StartHereBkgdColor = color;
-    if (color == wxColour(0,0,0)) return; //Dont set uninitialized color
+    wxColour color = m_UsrBkgdColor;
+    SetAllWindowsBackgroundColor(m_UsrBkgdColor); // my desired color 254,233,201
 
-    SetAllWindowsBackgroundColor(color); // my desired color 254,233,201
-
-    // On Idle will refresh the background colors until wxWidgets stops changing them
     return;
+}
+// ----------------------------------------------------------------------------
+void CBBkgdColor::OnSettingsChanged(CodeBlocksEvent& event)
+// ----------------------------------------------------------------------------
+{
+    // Get the users desired color from the Syntax Highlighting settings
+    // Set all background color to match that of the Editor backgroun color
+
+        const int value = event.GetInt();
+        if (value < int(cbSettingsType::First) || value >= int(cbSettingsType::Last))
+            return;
+        const cbSettingsType settingType = cbSettingsType(value);
+        if (not (settingType == cbSettingsType::Editor))
+            return;
+
+        // stop OnIdle() processing
+        Disconnect(wxEVT_IDLE, wxIdleEventHandler(CBBkgdColor::OnIdle) );
+        // Stop OnSetFocus() events processing
+        for (const auto& pair : logCtrlMap)
+        {
+            wxWindow* key = pair.first;
+            key->Unbind(wxEVT_SET_FOCUS, &CBBkgdColor::OnSetFocus, this);
+        }
+        // clear the log pointers and say Starup done is false
+        logCtrlMap.clear();
+        m_startupDone = 0;
+
+       // Defer editor changeed logic until after all other plugin process changes
+        CallAfter([this]() {
+            this->OnSettingsChangedPostProcessing(); }) ;
+
+    return;
+}
+// ----------------------------------------------------------------------------
+void CBBkgdColor::OnSettingsChangedPostProcessing()
+// ----------------------------------------------------------------------------
+{
+    // A restart is needed after Editor settings changes
+    CodeBlocksEvent evt(cbEVT_APP_STARTUP_DONE);
+    OnAppStartupDone(evt);
 }
 // ----------------------------------------------------------------------------
 void CBBkgdColor::OnIdle(wxIdleEvent& event)
@@ -120,8 +170,9 @@ void CBBkgdColor::OnIdle(wxIdleEvent& event)
 {
     event.Skip();
 
+    // On Idle will refresh the background colors until wxWidgets stops changing them.
     // Keep trying until wxWidgets stops over-writing our color choice
-    if (m_startupDone < m_MAX_TRIES)
+    if (m_startupDone < m_Max_Tries)
     {
         m_startupDone += 1;
         CodeBlocksEvent evt;
@@ -129,17 +180,43 @@ void CBBkgdColor::OnIdle(wxIdleEvent& event)
         return;
     }
 
-    // After max tries are over Bind event SET_FOCUS to each log control
-    if (m_startupDone == m_MAX_TRIES)
+    // After max tries are done, bind event SET_FOCUS to each log control
+    // and register to get CodeBlocks EditorOpen and EditorClose events.    // (ph 25/08/12)
+    if (m_startupDone == m_Max_Tries)
     {
-        m_startupDone += 1;
+        // This code is executed once only
+
+        m_startupDone += 1; // Increment so we only run this code once
         MakeLogCtrlMap();
         for (const auto& pair : logCtrlMap)
         {
             wxWindow* key = pair.first;
             key->Bind(wxEVT_SET_FOCUS, &CBBkgdColor::OnSetFocus, this);
         }
+
+        // deprecated
+        //- Register Editor Open/Close events // (ph 25/08/12)
+        //-Manager::Get()->RegisterEventSink(cbEVT_EDITOR_CLOSE, new cbEventFunctor<CBBkgdColor, CodeBlocksEvent>(this, &CBBkgdColor::OnEditorClosed));
+        //-Manager::Get()->RegisterEventSink(cbEVT_EDITOR_OPEN, new cbEventFunctor<CBBkgdColor, CodeBlocksEvent>(this, &CBBkgdColor::OnEditorOpened));
     }
+}
+
+#include "cbstyledtextctrl.h"
+// ----------------------------------------------------------------------------
+void CBBkgdColor::OnEditorOpened(CodeBlocksEvent& event)  // (ph 25/08/12)
+// ----------------------------------------------------------------------------
+{
+    /// deprecated
+    event.Skip();
+    return;
+}
+// ----------------------------------------------------------------------------
+void CBBkgdColor::OnEditorClosed(CodeBlocksEvent& event)
+// ----------------------------------------------------------------------------
+{
+    /// deprecated
+    event.Skip();
+    return;
 }
 // ----------------------------------------------------------------------------
 void CBBkgdColor::OnSetFocus(wxFocusEvent& event)
@@ -165,11 +242,11 @@ void CBBkgdColor::OnSetFocus(wxFocusEvent& event)
 
     if (obj && obj->IsKindOf(CLASSINFO(wxTextCtrl)))
     {
-        SetTextLogStyleBackground(logName, m_StartHereBkgdColor);
+        SetTextLogStyleBackground(logName, m_UsrBkgdColor);
     }
     else if (obj && obj->IsKindOf(CLASSINFO(wxListCtrl)))
     {
-        SetListLogStyleBackground(logName, m_StartHereBkgdColor);
+        SetListLogStyleBackground(logName, m_UsrBkgdColor);
 
     }
 }
@@ -517,7 +594,7 @@ bool CBBkgdColor::SetListLogStyleBackground(wxString logTitle, wxColour color)
 // ----------------------------------------------------------------------------
 {
     int logIndex = GetLogIndex(logTitle);
-    if (!logIndex)
+    if (not logIndex)
         return false;
 
     LogManager* pLogMgr = Manager::Get()->GetLogManager();
@@ -583,6 +660,169 @@ int CBBkgdColor::MakeLogCtrlMap()
 
     return logCtrlMap.size();
 }
+#include <cbcolourmanager.h>
+//#include <editorcolours.h>
+#include <manager.h>
+
+#include <cbcolourmanager.h>
+//-#include <cbeditorcolours.h>
+#include <manager.h>
+#include "personalitymanager.h"
+// ----------------------------------------------------------------------------
+wxColour CBBkgdColor::GetDefaultEditorBackground()
+// ----------------------------------------------------------------------------
+{
+    ConfigManager* pCfg = Manager::Get()->GetConfigManager(_T("editor"));
+    LogManager* pLogMgr = Manager::Get()->GetLogManager();
+
+    wxColour bgColour = wxColour(0,0,0);
+    //  Need the config personality
+    wxString personality = Manager::Get()->GetPersonalityManager()->GetPersonality();
+
+    // Guarantee .conf is closed on any return
+    struct CloseConf
+    {
+        CloseConf(){}
+        ~CloseConf(){if (confData.IsOpened()) confData.Close();}
+    } closeConf;
+
+    wxString confFile = pCfg->GetConfigFolder();
+    wxString confFilePath = confFile + "\\" + personality + ".conf";
+    if (platform::Linux) confFilePath.Replace("\\", "/");
+    if (not confData.Open(confFilePath))
+    {
+        cbMessageBox("CBBkgdColor plugin could not open "+confFilePath);
+        return bgColour;
+    }
+
+    wxString activeLang;
+    wxString defaultColour;
+
+    int ii = 0;
+    if ( wxNOT_FOUND == (ii = FindConfigItem(ii, "<editor>")))
+        return bgColour;
+    wxString line = confData.GetLine(ii);
+
+    if (wxNOT_FOUND == (ii = FindConfigItem(ii, "<ACTIVE_LANG>")))
+        return bgColour;
+    activeLang = confData.GetLine(ii+2);
+    // <![CDATA[C/C++]]>
+    activeLang = activeLang.AfterFirst('[').BeforeFirst(']');
+    activeLang = activeLang.AfterFirst('[');
+    activeLang = '<' + activeLang + ">";
+    if (activeLang.Contains("C/C++"))
+        activeLang.Replace("C/C++","cc");
+
+    if (wxNOT_FOUND == (ii = FindConfigItem(ii, activeLang)))
+        return bgColour;
+    line = confData.GetLine(ii);
+
+    if (wxNOT_FOUND == (ii = FindConfigItem(ii, "<BACK>")))
+        return bgColour;
+    if (wxNOT_FOUND == (ii = FindConfigItem(ii, "<colour r=")))
+        return bgColour;
+    // <colour r="254" g="233" b="201" />
+    defaultColour = confData.GetLine(ii).Trim(false);
+    defaultColour = defaultColour.Mid(10);
+    // transform defaultColour to a wxColour
+    //  "254" g="233" b="201" />
+    defaultColour.Replace("g=", "");
+    defaultColour.Replace("b=", "");
+    defaultColour.Replace(" />", "");
+    defaultColour.Replace("\"", "");
+    // 254 233 201
+    wxString red = defaultColour.BeforeFirst(' ').ToStdString();
+    wxString green = defaultColour.Mid(red.Length()+1).BeforeFirst(' ');
+    wxString blue = defaultColour.Mid(red.Length()+1+green.Length()+1);
+
+    bgColour = wxColour(std::stoi(red.ToStdString()),
+                        std::stoi(green.ToStdString()),
+                        std::stoi(blue.ToStdString()) );
+
+    wxString logit; logit << "CBBkgdColor wxColour: " << (int)bgColour.Red() << "," << (int)bgColour.Green() << "," << (int)bgColour.Blue();
+    pLogMgr->DebugLog(logit); logit.Clear();
+
+    // Return the colour
+    return bgColour;
+}
+// ----------------------------------------------------------------------------
+size_t CBBkgdColor::FindConfigItem(size_t linePosn, wxString key)
+// ----------------------------------------------------------------------------
+{
+    // Find an entry in the .conf file starting at linePosn
+
+    size_t ii = linePosn;
+
+    for (; ii < confData.GetLineCount(); ++ii)
+    {
+        wxString line = confData.GetLine(ii);
+        if (line.Trim(false).StartsWith(key))
+            return ii;
+        if (ii == confData.GetLineCount()-1)
+            return wxNOT_FOUND;
+    }
+
+    return wxNOT_FOUND;
+}
+
+#include <manager.h>
+#include <configmanager.h>
+#include <wx/colour.h>
+#include <wx/string.h>
+#include <wx/arrstr.h>
+// ----------------------------------------------------------------------------
+wxColour CBBkgdColor::ReadColourSetsConfig()
+// ----------------------------------------------------------------------------
+{
+
+    /// Deprecated. This works on Windows, but not on Linux.
+    // 48 hours of trying cannot make tinyxml work on linux
+    // See brutforce GetDefaultEditorBackground() method.
+
+    // Get ConfigManager for <edit> namespace
+    ConfigManager* cfg = Manager::Get()->GetConfigManager(_T("editor"));
+    LogManager* pLogMgr = Manager::Get()->GetLogManager();
+    wxString logit;
+
+    // Set XML path to colour_sets
+    cfg->SetPath(_T("/colour_sets"));
+    wxString curPath = cfg->GetPath();
+    logit << "CurPath:" << curPath;
+    pLogMgr->DebugLog(logit); logit.Clear();
+
+    // Example: read the value of ACTIVE_COLOUR_SET/str
+    wxString activeSet = cfg->Read("/colour_sets/active_colour_set", "");
+    logit << "Active colour set: " << activeSet.mb_str();
+    pLogMgr->DebugLog(logit); logit.Clear();
+
+    wxString activeLang = cfg->Read("/colour_sets/active_lang", "");
+    logit << "Active Language: " << activeLang.mb_str();
+    pLogMgr->DebugLog(logit); logit.Clear();
+
+    //// You can enumerate keys inside colour_sets:
+    //wxArrayString keys = cfg->EnumerateKeys("/colour_sets/"+activeSet);
+    //for (size_t i = 0; i < keys.GetCount(); ++i)
+    //{
+    //    logit << "Found element: " << keys[i].mb_str()
+    //              << " = " << cfg->Read(keys[i]).mb_str();
+    //    pLogMgr->DebugLog(logit); logit.Clear();
+    //
+    //}
+
+    if (activeLang == "C/C++") activeLang = "cc";
+    //cfg->SetPath(_T("/colour_sets/default/cc/style0"));
+    if (activeSet.Length() and activeLang.Length())
+        cfg->SetPath(_T("/colour_sets/" + activeSet + "/" + activeLang + "/style0"));
+    else return wxColour(0,0,0);
+    wxColour col = cfg->ReadColour(_T("BACK"), *wxBLACK);
+    logit << "BG Colour: " << (int)col.Red() << "," << (int)col.Green() << "," << (int)col.Blue();
+    pLogMgr->DebugLog(logit); logit.Clear();
+
+    return col;
+}
+
+
+
 // (ph 25/08/02)
 
 // For ListCtrlLoggers to support SetBackgroundColour(), this patch

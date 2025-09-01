@@ -17,10 +17,10 @@
 #ifndef WX_PRECOMP
     #include <wx/wx.h>
 #endif
+#include "wx/textfile.h"
 
 #include <cbplugin.h> // for "class cbPlugin"
 #include <logmanager.h>
-#include "loggers.h"
 
 class CBBkgdColor : public cbPlugin
 {
@@ -121,6 +121,9 @@ class CBBkgdColor : public cbPlugin
         DECLARE_EVENT_TABLE();
 
         void OnAppStartupDone(CodeBlocksEvent& event);
+        void OnSettingsChanged(CodeBlocksEvent& event);
+        void OnSettingsChangedPostProcessing();
+
         void SetAllWindowsBackgroundColor(const wxColour& color);
         void SetBackgroundColorRecursively(wxWindow* window, const wxColour& color);
         void OnIdle(wxIdleEvent& event);
@@ -129,24 +132,35 @@ class CBBkgdColor : public cbPlugin
         bool SetListLogStyleBackground(wxString logTitle, wxColour color);
         void OnSetFocus(wxFocusEvent& event);
         int  MakeLogCtrlMap();
+        void OnEditorOpened(CodeBlocksEvent& event);    // (ph 25/08/12)
+        void OnEditorClosed(CodeBlocksEvent& event);
+        wxColour GetDefaultEditorBackground();
+        wxColour ReadColourSetsConfig();
+        size_t FindConfigItem(size_t linePosn, wxString key);
 
+        #define MAX_TRIES 50;
         int             m_SearchResultLogIndex = 0;
-        const int       m_MAX_TRIES = 50;
+        const int       m_Max_Tries = MAX_TRIES;
 
         std::map<wxWindow*,std::string> logCtrlMap;
-        wxColour m_StartHereBkgdColor = wxColour(254,233,201); //color is reset in the code
+        wxColour m_UsrBkgdColor = wxColour(); //color is reset in the code
 
         int m_startupDone = 0;
+
 };
 
 #endif // CBBkgdColor_H_INCLUDED
 //----------------------------------------
-#define VERSION "1.0.5 25/08/02"
+#define VERSION "1.0.8 25/08/15"
 //----------------------------------------
 //versions
 // ----------------------------------------------------------------------------
 //  Modification History
 // ----------------------------------------------------------------------------
+// 1.0.8    2025/08/15  Abandon ConfigManager and use brute search of .conf file
+// 1.0.7    2025/08/14  Treat Settings/Editor changes as a restart mechanism because
+//                          the background color may have changed.
+// 1.0.6    2025/08/13  Use the users Highlighting editor background color instead of the StartHere color
 // 1.0.5    2025/08/02  Add support for wxTextAttr for future ListCtrlLogger patch
 // 1.0.4    2025/07/30  Change MAX_TRIES for OnIdle to 50
 // 1.0.3    2025/07/29  Initial version

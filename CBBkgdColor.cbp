@@ -59,6 +59,7 @@
 			<Add directory="$(#cb)/include" />
 			<Add directory="$(#cb)/sdk/wxscintilla/include" />
 			<Add directory="$(#cb)/include/tinyxml" />
+			<Add directory="$(#cb)/sdk/wxscintilla/src/scintilla/include" />
 		</Compiler>
 		<Linker>
 			<Add option="-mthreads" />
